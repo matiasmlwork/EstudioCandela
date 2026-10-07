@@ -1,0 +1,14 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "node scripts/build.mjs",
+  "outputDirectory": "public",
+  "cleanUrls": true,
+  "headers": [
+    { "source": "/img/(.*)", "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }] },
+    { "source": "/(pdf|fonts)/(.*)", "headers": [
+      { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" },
+      { "key": "Access-Control-Allow-Origin", "value": "*" }
+    ] },
+    { "source": "/(config|envio).js", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] }
+  ]
+}
