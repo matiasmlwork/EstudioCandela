@@ -1,9 +1,9 @@
 // Se dispara con cada respuesta nueva (trigger en la base → pg_net → esta función).
 // Genera el PDF, lo guarda en Storage (`resumenes/{id}.pdf`), completa pdf_url y lo manda por mail a Candela.
 //
-// Variables de entorno:
-//   WEBHOOK_SECRET   mismo valor que el secreto `webhook_secret` del Vault (lo manda el trigger)
-//   ASSETS_URL       URL del sitio en Vercel, de donde se leen fuentes y miniaturas (ej. https://habitar.vercel.app)
+// Configuración: variable de entorno o, si no está, fila en la tabla privada public.ajustes (clave en minúscula).
+//   WEBHOOK_SECRET   lo manda el trigger en el header x-webhook-secret
+//   ASSETS_URL       de donde se leen fuentes y miniaturas (bucket público `marca` o el sitio)
 //   RESEND_API_KEY   clave de Resend (si falta, no se manda mail)
 //   CANDELA_EMAIL    destinatario del mail (puede ser una lista separada por comas)
 //   RESEND_FROM      remitente verificado en Resend (por defecto onboarding@resend.dev)
@@ -11,9 +11,13 @@ import { createClient } from 'npm:@supabase/supabase-js@2';
 import { encodeBase64 } from 'jsr:@std/encoding@1/base64';
 import { armarPdf, Recursos } from './pdf.ts';
 
-const env = (k: string) => Deno.env.get(k) ?? '';
-const sb = createClient(env('SUPABASE_URL'), env('SUPABASE_SERVICE_ROLE_KEY'), { auth: { persistSession: false } });
-const ASSETS = env('ASSETS_URL').replace(/\/$/, '');
+const sb = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, { auth: { persistSession: false } });
+let ajustes: Record<string, string> | null = null;
+async function cargarAjustes() {
+  const { data } = await sb.from('ajustes').select('clave, valor');
+  ajustes = Object.fromEntries((data ?? []).map((x) => [x.clave, x.valor]));
+}
+const env = (k: string) => Deno.env.get(k) || ajustes?.[k.toLowerCase()] || '';
 
 const bajar = async (url: string) => {
   const r = await fetch(url);
@@ -21,7 +25,7 @@ const bajar = async (url: string) => {
   return new Uint8Array(await r.arrayBuffer());
 };
 let fuentes: Recursos['fuentes'] | null = null;
-const cargarFuentes = async () => fuentes ??= {
+const cargarFuentes = async (ASSETS: string) => fuentes ??= {
   serif: await bajar(`${ASSETS}/fonts/CormorantGaramond-Regular.ttf`),
   serifMed: await bajar(`${ASSETS}/fonts/CormorantGaramond-Medium.ttf`),
   serifIt: await bajar(`${ASSETS}/fonts/CormorantGaramond-Italic.ttf`),
@@ -30,11 +34,12 @@ const cargarFuentes = async () => fuentes ??= {
 };
 
 async function procesar(id: string) {
+  const ASSETS = (env('ASSETS_URL') || `${Deno.env.get('SUPABASE_URL')}/storage/v1/object/public/marca`).replace(/\/$/, '');
   const { data: fila, error } = await sb.from('respuestas_habitar').select('*').eq('id', id).single();
   if (error || !fila) throw new Error(`No encontré la respuesta ${id}: ${error?.message}`);
 
   const pdf = await armarPdf(fila.respuestas ?? {}, new Date(fila.creado_en), {
-    fuentes: await cargarFuentes(),
+    fuentes: await cargarFuentes(ASSETS),
     imagen: (k) => bajar(`${ASSETS}/pdf/${k}.${k === 'isotipo' ? 'png' : 'jpg'}`).catch(() => null),
     foto: async (ruta) => {
       const { data } = await sb.storage.from('referencias').download(ruta);
@@ -76,6 +81,7 @@ const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 
 Deno.serve(async (req) => {
   if (req.method !== 'POST') return new Response('Método no permitido', { status: 405 });
+  await cargarAjustes();
   const secreto = env('WEBHOOK_SECRET');
   if (!secreto || req.headers.get('x-webhook-secret') !== secreto) return new Response('No autorizado', { status: 401 });
 
